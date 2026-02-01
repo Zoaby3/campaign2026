@@ -1,0 +1,1570 @@
+import { useEffect, useMemo, useState, useRef } from 'react'
+import './App.css'
+
+// Types
+export type Review = {
+  id: string
+  requestId: string
+  reviewerEmail: string
+  reviewerName: string
+  revieweeEmail: string
+  rating: number // 1-5 stars
+  comment: string
+  createdAt: string
+  type: 'client_to_designer' | 'designer_to_client'
+}
+
+export type Message = {
+  id: string
+  requestId: string
+  senderEmail: string
+  senderName: string
+  receiverEmail: string
+  content: string
+  createdAt: string
+  read: boolean
+}
+
+export type Notification = {
+  id: string
+  userEmail: string
+  title: string
+  message: string
+  type: 'info' | 'success' | 'warning' | 'error'
+  relatedId?: string // requestId or other relevant ID
+  read: boolean
+  createdAt: string
+}
+
+export type Designer = {
+  id: string
+  name: string
+  location?: string
+  skills: string[]
+  rating?: number
+  portfolioUrl?: string
+  contactEmail: string
+  phone?: string
+  rateKES?: number
+  reviews?: Review[]
+  completedProjects?: number
+  responseRate?: number
+}
+
+export type DesignRequest = {
+  id: string
+  candidateName: string
+  office: string
+  requirements: string
+  style?: string
+  deadline?: string
+  budget?: string
+  contactEmail: string
+  createdAt: string
+  paid?: boolean
+  feeKES?: number
+  selectedDesignerIds?: string[]
+  images?: string[] // base64 or URLs for MVP
+  keyMessages?: string
+  colors?: string
+  targetAudience?: string
+  workStatus?: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'revision_requested'
+  acceptedDesignerId?: string
+  completedAt?: string
+  submittedWork?: string[] // URLs or base64 of completed work
+  revisions?: Revision[]
+  clientRating?: number
+  designerRating?: number
+}
+
+export type Revision = {
+  id: string
+  requestId: string
+  requestedBy: string
+  comment: string
+  createdAt: string
+  status: 'pending' | 'completed'
+  files?: string[]
+}
+
+// Storage helpers
+const STORAGE_KEYS = {
+  designers: 'campaign_bridge_designers',
+  requests: 'campaign_bridge_requests',
+  reviews: 'campaign_bridge_reviews',
+  messages: 'campaign_bridge_messages',
+  notifications: 'campaign_bridge_notifications',
+  revisions: 'campaign_bridge_revisions'
+}
+
+function loadFromStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return fallback
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
+}
+
+function saveToStorage<T>(key: string, value: T) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // no-op
+  }
+}
+
+// Sample data
+const SAMPLE_DESIGNERS: Designer[] = [
+  {
+    id: 'd-1',
+    name: 'Amina K.',
+    location: 'Nairobi, KE',
+    skills: ['Poster Design', 'Branding', 'Figma', 'Canva'],
+    rating: 4.8,
+    portfolioUrl: 'https://example.com/amina-portfolio',
+    contactEmail: 'amina@example.com',
+    phone: '0712345678',
+    rateKES: 6000,
+  },
+  {
+    id: 'd-2',
+    name: 'John M.',
+    location: 'Mombasa, KE',
+    skills: ['UX/UI', 'Wireframing', 'Prototyping'],
+    rating: 4.6,
+    portfolioUrl: 'https://example.com/john-portfolio',
+    contactEmail: 'john@example.com',
+    phone: '0722123456',
+    rateKES: 10000,
+  },
+  {
+    id: 'd-3',
+    name: 'Lydia N.',
+    location: 'Kisumu, KE',
+    skills: ['Illustration', 'Social Media Banners', 'Poster Design'],
+    rating: 4.9,
+    portfolioUrl: 'https://example.com/lydia-portfolio',
+    contactEmail: 'lydia@example.com',
+    phone: '0790123456',
+    rateKES: 4500,
+  },
+]
+
+// Utils
+function formatKES(n: number) {
+  return new Intl.NumberFormat('en-KE', { style: 'currency', currency: 'KES', maximumFractionDigits: 0 }).format(n)
+}
+
+// Helper functions for work status
+function getWorkStatusText(status?: string) {
+  switch (status) {
+    case 'in_progress': return 'In Progress - Designer working'
+    case 'completed': return 'Completed - Work submitted'
+    case 'cancelled': return 'Cancelled'
+    case 'revision_requested': return 'Revision Requested'
+    default: return 'Pending - Waiting for designer acceptance'
+  }
+}
+
+function getWorkStatusColor(status?: string) {
+  switch (status) {
+    case 'in_progress': return '#f59e0b' // amber
+    case 'completed': return '#10b981' // green
+    case 'cancelled': return '#ef4444' // red
+    case 'revision_requested': return '#8b5cf6' // purple
+    default: return '#6b7280' // gray
+  }
+}
+
+function getWorkStatusIcon(status?: string) {
+  switch (status) {
+    case 'in_progress': return '🔄'
+    case 'completed': return '✅'
+    case 'cancelled': return '❌'
+    case 'revision_requested': return '🔄'
+    default: return '⏳'
+  }
+}
+
+// Rating component
+function RatingStars({ rating, size = 16, interactive = false, onRatingChange }: { rating: number; size?: number; interactive?: boolean; onRatingChange?: (rating: number) => void }) {
+  return (
+    <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+      {[1, 2, 3, 4, 5].map((star) => (
+        <button
+          key={star}
+          onClick={() => interactive && onRatingChange?.(star)}
+          disabled={!interactive}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: interactive ? 'pointer' : 'default',
+            fontSize: size,
+            color: star <= rating ? '#fbbf24' : '#d1d5db',
+            padding: 0,
+            lineHeight: 1
+          }}
+        >
+          ★
+        </button>
+      ))}
+      <span style={{ fontSize: size * 0.8, marginLeft: 4, color: '#6b7280' }}>
+        {rating.toFixed(1)}
+      </span>
+    </div>
+  )
+}
+
+// Review form component
+function ReviewForm({ requestId, revieweeEmail, revieweeName, type, onSubmit, onCancel }: {
+  requestId: string
+  revieweeEmail: string
+  revieweeName: string
+  type: 'client_to_designer' | 'designer_to_client'
+  onSubmit: (review: Omit<Review, 'id' | 'createdAt'>) => void
+  onCancel: () => void
+}) {
+  const [rating, setRating] = useState(5)
+  const [comment, setComment] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!comment.trim()) return
+
+    setSubmitting(true)
+    onSubmit({
+      requestId,
+      reviewerEmail: '', // Will be filled by parent
+      reviewerName: '', // Will be filled by parent
+      revieweeEmail,
+      rating,
+      comment: comment.trim(),
+      type
+    })
+    setSubmitting(false)
+  }
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, margin: '8px 0' }}>
+      <h4 style={{ margin: '0 0 12px' }}>Review {revieweeName}</h4>
+      <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 12 }}>
+        <div>
+          <label style={{ display: 'block', marginBottom: 4, fontSize: 14, fontWeight: 500 }}>Rating</label>
+          <RatingStars rating={rating} interactive onRatingChange={setRating} />
+        </div>
+        <div>
+          <label style={{ display: 'block', marginBottom: 4, fontSize: 14, fontWeight: 500 }}>Comment</label>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Share your experience working with them..."
+            required
+            rows={3}
+            style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border)', resize: 'vertical' }}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onCancel} className="button" style={{ background: 'var(--bg-elev)', color: 'var(--muted)', border: '1px solid var(--border)' }}>
+            Cancel
+          </button>
+          <button type="submit" disabled={submitting || !comment.trim()} className="button">
+            {submitting ? 'Submitting...' : 'Submit Review'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+// Messaging component
+function MessagingPanel({ requestId, currentUser, otherUser, messages, onSendMessage, onClose }: {
+  requestId: string
+  currentUser: { email: string; name: string }
+  otherUser: { email: string; name: string }
+  messages: Message[]
+  onSendMessage: (content: string) => void
+  onClose: () => void
+}) {
+  const [newMessage, setNewMessage] = useState('')
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  const conversationMessages = messages
+    .filter(m =>
+      (m.senderEmail === currentUser.email && m.receiverEmail === otherUser.email) ||
+      (m.senderEmail === otherUser.email && m.receiverEmail === currentUser.email)
+    )
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [conversationMessages.length])
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (newMessage.trim()) {
+      onSendMessage(newMessage.trim())
+      setNewMessage('')
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: 'rgba(0,0,0,0.5)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16,
+      zIndex: 1000
+    }}>
+      <div style={{
+        background: 'var(--bg-elev)',
+        width: 'min(600px, 96vw)',
+        height: '70vh',
+        borderRadius: 12,
+        display: 'flex',
+        flexDirection: 'column',
+        boxShadow: '0 10px 30px rgba(0,0,0,0.2)'
+      }}>
+        <div style={{ padding: 16, borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Chat with {otherUser.name}</h3>
+            <p style={{ margin: 0, fontSize: 12, opacity: 0.8 }}>{otherUser.email}</p>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer' }}>×</button>
+        </div>
+
+        <div style={{ flex: 1, padding: 16, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {conversationMessages.map(message => (
+            <div key={message.id} style={{
+              display: 'flex',
+              justifyContent: message.senderEmail === currentUser.email ? 'flex-end' : 'flex-start',
+              maxWidth: '80%'
+            }}>
+              <div style={{
+                background: message.senderEmail === currentUser.email ? '#3b82f6' : '#f3f4f6',
+                color: message.senderEmail === currentUser.email ? 'white' : '#1f2937',
+                padding: '8px 12px',
+                borderRadius: 12,
+                borderBottomLeftRadius: message.senderEmail === currentUser.email ? 12 : 4,
+                borderBottomRightRadius: message.senderEmail === currentUser.email ? 4 : 12
+              }}>
+                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 2 }}>
+                  {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </div>
+                <div>{message.content}</div>
+              </div>
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ padding: 16, borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
+          <input
+            type="text"
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            placeholder="Type your message..."
+            style={{ flex: 1, padding: 8, borderRadius: 6, border: '1px solid var(--border)' }}
+          />
+          <button type="submit" className="button" disabled={!newMessage.trim()}>
+            Send
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// Notification component
+function NotificationCenter({ notifications, onMarkRead, onClearAll }: {
+  notifications: Notification[]
+  onMarkRead: (id: string) => void
+  onClearAll: () => void
+}) {
+  return (
+    <div style={{ position: 'fixed', top: 60, right: 16, width: 300, maxHeight: 400, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 100 }}>
+      <div style={{ padding: 12, borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h4 style={{ margin: 0, fontSize: 14 }}>Notifications</h4>
+        <button onClick={onClearAll} style={{ background: 'none', border: 'none', fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }}>Clear all</button>
+      </div>
+      <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+        {notifications.length === 0 ? (
+          <div style={{ padding: 20, textAlign: 'center', opacity: 0.6 }}>No notifications</div>
+        ) : (
+          notifications.map(notification => (
+            <div key={notification.id} style={{
+              padding: 12,
+              borderBottom: '1px solid var(--border)',
+              background: notification.read ? 'transparent' : '#f0f9ff'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{notification.title}</div>
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>{notification.message}</div>
+                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2 }}>
+                    {new Date(notification.createdAt).toLocaleTimeString()}
+                  </div>
+                </div>
+                {!notification.read && (
+                  <button
+                    onClick={() => onMarkRead(notification.id)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--muted)' }}
+                  >
+                    Mark read
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Determine fee between KES 400 and 800 based on provided budget
+function determineFeeKES(budgetStr?: string) {
+  const n = Number(String(budgetStr || '').replace(/[^\d.]/g, ''))
+  if (!isFinite(n) || n <= 0) return 600 // default
+  if (n <= 5000) return 400
+  if (n <= 15000) return 600
+  return 800
+}
+
+function toMSISDNKE(phone?: string) {
+  if (!phone) return null;
+  const digits = String(phone).replace(/[^0-9]/g, '');
+  if (digits.startsWith('0') && digits.length === 10) return '254' + digits.slice(1);
+  if (digits.startsWith('254') && digits.length === 12) return digits;
+  if (digits.startsWith('+254') && digits.length === 13) return digits.slice(1);
+  return null;
+}
+
+// UI Components
+function Header() {
+  return (
+    <header style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+      <div className="logo" style={{ width: 40, height: 40, borderRadius: 10, background: '#646cff', display: 'inline-block' }} />
+      <div>
+        <h1 style={{ margin: 0, fontSize: 20 }}>CampaignDesign Bridge</h1>
+        <p style={{ margin: 0, opacity: 0.8, fontSize: 12 }}>Connecting ballot candidates with UX/UI and poster designers</p>
+      </div>
+    </header>
+  )
+}
+
+type ViewKey = 'dashboard' | 'designers' | 'request' | 'join' | 'admin' | 'login'
+type UserRole = 'client' | 'designer' | 'admin' | null
+
+function SidebarItem({ k, label, active, onChange }: { k: ViewKey; label: string; active: ViewKey; onChange: (v: ViewKey) => void }) {
+  return (
+    <button
+      onClick={() => onChange(k)}
+      style={{
+        width: '100%',
+        textAlign: 'left',
+        padding: '10px 12px',
+        borderRadius: 8,
+        border: '1px solid var(--border)',
+        background: active === k ? '#1a1e44' : 'var(--bg-elev)',
+        color: 'var(--text)',
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
+function Sidebar({ active, onChange, userRole }: { active: ViewKey; onChange: (v: ViewKey) => void; userRole: UserRole }) {
+  const isAdmin = localStorage.getItem('admin_logged_in') === 'true'
+  return (
+    <aside className="sidebar" style={{ display: 'grid', gap: 8 }}>
+      <SidebarItem k="dashboard" label="Dashboard" active={active} onChange={onChange} />
+      {(!userRole || userRole === 'client') && <SidebarItem k="designers" label="Browse Designers" active={active} onChange={onChange} />}
+      {(!userRole || userRole === 'client') && <SidebarItem k="request" label="Post Request" active={active} onChange={onChange} />}
+      {(!userRole || userRole === 'designer') && <SidebarItem k="join" label="Join as Designer" active={active} onChange={onChange} />}
+      {isAdmin && <SidebarItem k="admin" label="Admin Panel" active={active} onChange={onChange} />}
+      <div style={{ fontSize: 12, opacity: 0.8, marginTop: 8 }}>
+        Payments: KES 400–800 per request, based on budget
+      </div>
+      {!isAdmin && (
+        <button
+          onClick={() => onChange('login')}
+          style={{ fontSize: 10, opacity: 0.5, background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer' }}
+        >
+          Admin Login
+        </button>
+      )}
+    </aside>
+  )
+}
+
+function InfoNote() {
+  return (
+    <p style={{ fontSize: 12, opacity: 0.8 }}>
+      MVP: Data is stored locally. No direct contact from campaigners to designers; paid requests alert selected designers via WhatsApp through admin. For production, add auth, messaging, file uploads, and real payments (e.g., M-Pesa STK).
+    </p>
+  )
+}
+
+function DesignerCard({ d, selectable, selected, onToggle }: { d: Designer; selectable?: boolean; selected?: boolean; onToggle?: (id: string) => void }) {
+  return (
+    <div style={{ border: selected ? '2px solid #646cff' : '1px solid var(--border)', borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+        <div>
+          <h3 style={{ margin: '0 0 4px' }}>{d.name}</h3>
+          {d.location && (
+            <p style={{ margin: 0, fontSize: 12, opacity: 0.8 }}>{d.location}</p>
+          )}
+        </div>
+        {typeof d.rating === 'number' && (
+          <span style={{ fontSize: 12, background: '#eef1ff', padding: '4px 8px', borderRadius: 999 }}>
+            ⭐ {d.rating.toFixed(1)}
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {d.skills.map((s, i) => (
+          <span key={i} className="chip">{s}</span>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 12, opacity: 0.8 }}>Indicative rate: {d.rateKES ? formatKES(d.rateKES) : 'Ask'}</div>
+        {d.portfolioUrl && (
+          <a href={d.portfolioUrl} target="_blank" rel="noreferrer" className="button" style={{ textDecoration: 'none' }}>
+            View Portfolio
+          </a>
+        )}
+        {selectable && (
+          <button className="button" onClick={() => onToggle?.(d.id)}>{selected ? 'Selected' : 'Select'}</button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DesignerList({ designers, requests }: { designers: Designer[]; requests: DesignRequest[] }) {
+  const [query, setQuery] = useState('')
+  const [skill, setSkill] = useState('')
+
+  const allSkills = useMemo(
+    () => Array.from(new Set(designers.flatMap((d) => d.skills))).sort(),
+    [designers]
+  )
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const s = skill.trim().toLowerCase()
+    return designers.filter((d) => {
+      const matchesQuery = !q || d.name.toLowerCase().includes(q) || d.location?.toLowerCase().includes(q)
+      const matchesSkill = !s || d.skills.some((x) => x.toLowerCase().includes(s))
+      return matchesQuery && matchesSkill
+    })
+  }, [designers, query, skill])
+
+  const recentRequests = useMemo(() => requests.filter(r => r.paid).slice(0, 5), [requests])
+
+  return (
+    <div className="designer-list" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
+      <div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name or location" style={{ padding: 8, borderRadius: 8, border: '1px solid #ccc', flex: 1, minWidth: 200 }} />
+          <select value={skill} onChange={(e) => setSkill(e.target.value)} style={{ padding: 8, borderRadius: 8, border: '1px solid #ccc' }}>
+            <option value="">All skills</option>
+            {allSkills.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+          {filtered.map((d) => (
+            <DesignerCard key={d.id} d={d} />
+          ))}
+          {filtered.length === 0 && <p>No designer match your filters.</p>}
+        </div>
+      </div>
+      <aside style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+        <h3 style={{ marginTop: 0 }}>Recent Paid Requests</h3>
+        {recentRequests.length === 0 && <p style={{ fontSize: 14, opacity: 0.8 }}>No paid requests yet.</p>}
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {recentRequests.map((r) => (
+            <li key={r.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8 }}>
+              <strong>{r.candidateName}</strong> — {r.office}
+              <div style={{ fontSize: 12, opacity: 0.8 }}>Budget: {r.budget || 'N/A'} • Deadline: {r.deadline || 'N/A'}</div>
+            </li>
+          ))}
+        </ul>
+      </aside>
+    </div>
+  )
+}
+
+function CandidateRequestForm({ designers, onCheckout }: { designers: Designer[]; onCheckout: (r: DesignRequest) => void }) {
+  const [candidateName, setCandidateName] = useState('')
+  const [office, setOffice] = useState('')
+  const [requirements, setRequirements] = useState('')
+  const [style, setStyle] = useState('')
+  const [deadline, setDeadline] = useState('')
+  const [budget, setBudget] = useState('')
+  const [contactEmail, setContactEmail] = useState('')
+  const [selected, setSelected] = useState<string[]>([])
+  const [images, setImages] = useState<File[]>([])
+  const [keyMessages, setKeyMessages] = useState('')
+  const [colors, setColors] = useState('')
+  const [targetAudience, setTargetAudience] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const isFormValid = candidateName && office && requirements && contactEmail && images.length >= 2
+
+  const affordable = useMemo(() => {
+    const n = Number(String(budget || '').replace(/[^\d.]/g, ''))
+    if (!isFinite(n) || n <= 0) return designers
+    return designers.filter(d => !d.rateKES || d.rateKES <= n)
+  }, [designers, budget])
+
+  function toggle(id: string) {
+    setSelected((prev) => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!isFormValid || submitting) return
+    setSubmitting(true)
+    try {
+      const fee = determineFeeKES(budget)
+      // Simulate upload: convert to base64 for MVP
+      const imageUrls: string[] = []
+      for (const img of images) {
+        const base64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.readAsDataURL(img)
+        })
+        imageUrls.push(base64)
+      }
+      const r: DesignRequest = {
+        id: crypto.randomUUID(),
+        candidateName,
+        office,
+        requirements,
+        style: style || undefined,
+        deadline: deadline || undefined,
+        budget: budget || undefined,
+        contactEmail,
+        createdAt: new Date().toISOString(),
+        feeKES: fee,
+        paid: false,
+        selectedDesignerIds: selected,
+        images: imageUrls,
+        keyMessages: keyMessages || undefined,
+        colors: colors || undefined,
+        targetAudience: targetAudience || undefined,
+      }
+      onCheckout(r)
+    } catch (error) {
+      console.error('Error submitting form:', error)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="request-form" style={{ display: 'grid', gap: 10 }}>
+      <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
+        <input value={candidateName} onChange={(e) => setCandidateName(e.target.value)} placeholder="Your name" required style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+        <input value={office} onChange={(e) => setOffice(e.target.value)} placeholder="Position/Office (e.g., MP, Governor)" required style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      </div>
+      <textarea value={requirements} onChange={(e) => setRequirements(e.target.value)} placeholder="Describe your poster/branding needs (sizes, color, photos, slogans, sample references)" required rows={5} style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr 1fr' }}>
+        <input value={style} onChange={(e) => setStyle(e.target.value)} placeholder="Preferred style (e.g., minimal, bold, official)" style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+        <input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} placeholder="Deadline" style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+        <input value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="Budget (KES e.g., 8000)" style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      </div>
+      <input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="Contact email" required style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+        <strong>Upload at least 2 photos</strong> (e.g., your photo, campaign logo, or reference images)
+        <input type="file" multiple accept="image/*" onChange={(e) => setImages(Array.from(e.target.files || []))} required style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc', marginTop: 8 }} />
+        {images.length > 0 && <p>{images.length} image(s) selected</p>}
+      </div>
+      <textarea value={keyMessages} onChange={(e) => setKeyMessages(e.target.value)} placeholder="Key messages or slogans to include" rows={3} style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      <input value={colors} onChange={(e) => setColors(e.target.value)} placeholder="Preferred colors (e.g., blue and gold)" style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      <input value={targetAudience} onChange={(e) => setTargetAudience(e.target.value)} placeholder="Target audience (e.g., youth, farmers)" style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <strong>Select preferred designers</strong>
+          <span style={{ fontSize: 12, opacity: 0.7 }}>Only the designers you select will be alerted.</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+          {affordable.map(d => (
+            <DesignerCard key={d.id} d={d} selectable selected={selected.includes(d.id)} onToggle={toggle} />
+          ))}
+          {affordable.length === 0 && <p>No designers match your budget. Increase budget or proceed and we will still publish.</p>}
+        </div>
+      </div>
+      <button type="submit" className="button" disabled={!isFormValid || submitting}>
+        {submitting ? 'Processing...' : 'Continue to Checkout'}
+      </button>
+    </form>
+  )
+}
+
+function DesignerSignupForm({ onCreate }: { onCreate: (d: Designer) => void }) {
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [location, setLocation] = useState('')
+  const [skills, setSkills] = useState('')
+  const [portfolioUrl, setPortfolioUrl] = useState('')
+  const [rate, setRate] = useState('')
+  const [status, setStatus] = useState<'idle' | 'success'>('idle')
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!name || !email) return
+    const d: Designer = {
+      id: crypto.randomUUID(),
+      name,
+      contactEmail: email,
+      phone: phone || undefined,
+      location: location || undefined,
+      skills: skills
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      portfolioUrl: portfolioUrl || undefined,
+      rating: 4.5,
+      rateKES: Number(rate.replace(/[^\d.]/g, '')) || undefined,
+    }
+    onCreate(d)
+    setStatus('success')
+    setName('')
+    setEmail('')
+    setLocation('')
+    setSkills('')
+    setPortfolioUrl('')
+    setPhone('')
+    setRate('')
+    setTimeout(() => setStatus('idle'), 2500)
+  }
+
+  return (
+    <form onSubmit={submit} style={{ display: 'grid', gap: 10 }}>
+      <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" required style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" required style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      </div>
+      <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="WhatsApp/Phone (e.g., 07xxxxxxxx)" required style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      <div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
+        <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Location (optional)" style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+        <input value={portfolioUrl} onChange={(e) => setPortfolioUrl(e.target.value)} placeholder="Portfolio URL (optional)" style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      </div>
+      <input value={rate} onChange={(e) => setRate(e.target.value)} placeholder="Indicative rate (KES, e.g., 8000)" style={{ padding: 10, borderRadius: 8, border: '1px solid var(--border)' }} />
+      <input value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="Skills (comma separated)" style={{ padding: 10, borderRadius: 8, border: '1px solid #ccc' }} />
+      <button type="submit" className="button">Join as Designer</button>
+      {status === 'success' && <p style={{ color: 'var(--success)' }}>Profile created! Campaigners can select you for requests.</p>}
+    </form>
+  )
+}
+
+function CheckoutPanel({ request, onCancel, onSuccess }: { request: DesignRequest; onCancel: () => void; onSuccess: (paidRequest: DesignRequest) => void }) {
+  const fee = request.feeKES || determineFeeKES(request.budget)
+  const [processing, setProcessing] = useState(false)
+
+  function simulatePay() {
+    setProcessing(true)
+    // Simulate network/payment delay
+    setTimeout(() => {
+      const paid: DesignRequest = { ...request, paid: true, feeKES: fee }
+      onSuccess(paid)
+      setProcessing(false)
+    }, 1200)
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 1000 }}>
+      <div className="checkout-panel" style={{ background: 'var(--bg-elev)', width: 'min(560px, 96vw)', borderRadius: 12, padding: 16, boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }}>
+        <h2 style={{ marginTop: 0 }}>Checkout</h2>
+        <div style={{ marginBottom: 12, fontSize: 14 }}>
+          <div><strong>Posting: </strong>{request.candidateName} — {request.office}</div>
+          <div><strong>Budget: </strong>{request.budget || 'N/A'}</div>
+        </div>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Platform posting fee</span>
+            <strong>{formatKES(fee)}</strong>
+          </div>
+          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>Fee varies with your project budget (KES 400–800). This helps us run the platform and attract vetted designers.</div>
+        </div>
+
+        <div style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
+          <label style={{ fontWeight: 600 }}>Payment method</label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button disabled className="button" title="Coming soon" style={{ opacity: 0.7 }}>M-Pesa STK (Coming soon)</button>
+            <button disabled className="button" title="Coming soon" style={{ opacity: 0.7 }}>Card (Coming soon)</button>
+            <button disabled className="button" title="Coming soon" style={{ opacity: 0.7 }}>PayPal (Coming soon)</button>
+          </div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>
+            For MVP, click "Simulate Payment" to confirm. Integrate real payments later (e.g., Safaricom Daraja API or Flutterwave).
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onCancel} className="button" style={{ background: 'var(--bg-elev)', color: 'var(--muted)', border: '1px solid var(--border)' }} disabled={processing}>Cancel</button>
+          <button onClick={simulatePay} className="button" disabled={processing}>{processing ? 'Processing…' : `Simulate Payment ${formatKES(fee)}`}</button>
+        </div>
+  const myRequests = requests.filter(r => r.contactEmail === userEmail)
+  const unpaidRequests = myRequests.filter(r => !r.paid)
+  const pendingRequests = myRequests.filter(r => r.paid && (!r.workStatus || r.workStatus === 'pending'))
+  const inProgressRequests = myRequests.filter(r => r.workStatus === 'in_progress')
+  const completedRequests = myRequests.filter(r => r.workStatus === 'completed')
+  const rejectedRequests = myRequests.filter(r => r.workStatus === 'cancelled')
+
+        // State for UI interactions
+        const [showMessaging, setShowMessaging] = useState<string | null>(null)
+        const [showReviewForm, setShowReviewForm] = useState<string | null>(null)
+
+        // Helper function to get client-friendly status text
+        function getClientStatusText(status?: string, paid?: boolean) {
+    if (!paid) return 'Payment Pending'
+        switch (status) {
+      case 'in_progress': return 'Designer Working'
+        case 'completed': return 'Completed'
+        case 'cancelled': return 'Cancelled'
+        default: return 'Waiting for Designer'
+    }
+  }
+
+        // Helper function to get status color
+        function getClientStatusColor(status?: string, paid?: boolean) {
+    if (!paid) return '#f59e0b' // amber for payment pending
+        switch (status) {
+      case 'in_progress': return '#3b82f6' // blue for in progress
+        case 'completed': return '#10b981' // green for completed
+        case 'cancelled': return '#ef4444' // red for cancelled
+        default: return '#6b7280' // gray for waiting
+    }
+  }
+
+        // Helper function to get status icon
+        function getClientStatusIcon(status?: string, paid?: boolean) {
+    if (!paid) return '💳'
+        switch (status) {
+      case 'in_progress': return '🎨'
+        case 'completed': return '✅'
+        case 'cancelled': return '❌'
+        default: return '⏳'
+    }
+  }
+
+        function handleAddReview(reviewData: Omit<Review, 'id' | 'createdAt'>) {
+          onAddReview({
+            ...reviewData,
+            reviewerEmail: userEmail,
+            reviewerName: userEmail.split('@')[0] // Extract name from email
+          })
+    setShowReviewForm(null)
+  }
+
+        function handleSendMessage(content: string, designerEmail: string, designerName: string) {
+          onSendMessage({
+            requestId: '', // Will be set by context
+            senderEmail: userEmail,
+            senderName: userEmail.split('@')[0],
+            receiverEmail: designerEmail,
+            content
+          })
+        }
+
+        return (
+        <div className="client-dashboard" style={{ display: 'grid', gap: 16 }}>
+          {/* Status Overview Cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+            <div style={{ border: '2px solid #f59e0b', borderRadius: 12, padding: 12, background: '#fef3c7' }}>
+              <div style={{ fontSize: 12, opacity: 0.8, color: '#92400e' }}>💳 Payment Pending</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#92400e' }}>{unpaidRequests.length}</div>
+            </div>
+            <div style={{ border: '2px solid #6b7280', borderRadius: 12, padding: 12, background: '#f9fafb' }}>
+              <div style={{ fontSize: 12, opacity: 0.8, color: '#374151' }}>⏳ Waiting for Designer</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#374151' }}>{pendingRequests.length}</div>
+            </div>
+            <div style={{ border: '2px solid #3b82f6', borderRadius: 12, padding: 12, background: '#eff6ff' }}>
+              <div style={{ fontSize: 12, opacity: 0.8, color: '#1e40af' }}>🎨 In Progress</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#1e40af' }}>{inProgressRequests.length}</div>
+            </div>
+            <div style={{ border: '2px solid #10b981', borderRadius: 12, padding: 12, background: '#d1fae5' }}>
+              <div style={{ fontSize: 12, opacity: 0.8, color: '#065f46' }}>✅ Completed</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#065f46' }}>{completedRequests.length}</div>
+            </div>
+            <div style={{ border: '2px solid #ef4444', borderRadius: 12, padding: 12, background: '#fef2f2' }}>
+              <div style={{ fontSize: 12, opacity: 0.8, color: '#991b1b' }}>❌ Cancelled</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#991b1b' }}>{rejectedRequests.length}</div>
+            </div>
+            <div style={{ border: '2px solid #8b5cf6', borderRadius: 12, padding: 12, background: '#f3e8ff' }}>
+              <div style={{ fontSize: 12, opacity: 0.8, color: '#5b21b6' }}>💰 Total Spent</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#5b21b6' }}>{formatKES(myRequests.filter(r => r.paid).reduce((sum, r) => sum + (r.feeKES || 0), 0))}</div>
+            </div>
+          </div>
+
+          {/* Detailed Project Tracking */}
+          <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 16 }}>📋 Project Progress Tracking</h3>
+            {myRequests.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 32, background: '#f9fafb', borderRadius: 8 }}>
+                <div style={{ fontSize: 48, marginBottom: 16 }}>📝</div>
+                <h4 style={{ margin: '0 0 8px', color: '#374151' }}>No projects yet</h4>
+                <p style={{ margin: '0 0 16px', opacity: 0.8 }}>Start by posting your first design request</p>
+                <button className="button" style={{ padding: '8px 16px' }}>Create Your First Project</button>
+              </div>
+            )}
+          </div>
+        </div>
+        )
+}
+
+        function DesignerDashboard({requests, designers, designerEmail, onUpdateRequest}: {requests: DesignRequest[]; designers: Designer[]; designerEmail: string; onUpdateRequest: (request: DesignRequest) => void }) {
+  const currentDesigner = designers.find(d => d.contactEmail === designerEmail)
+  const mySelectedRequests = requests.filter(r => r.paid && r.selectedDesignerIds?.includes(currentDesigner?.id || ''))
+  const availableRequests = requests.filter(r => r.paid && !r.workStatus && r.selectedDesignerIds?.includes(currentDesigner?.id || ''))
+  const myAcceptedRequests = requests.filter(r => r.acceptedDesignerId === currentDesigner?.id)
+  const myInProgressRequests = myAcceptedRequests.filter(r => r.workStatus === 'in_progress')
+  const myCompletedRequests = myAcceptedRequests.filter(r => r.workStatus === 'completed')
+
+        function acceptWork(requestId: string) {
+    const request = requests.find(r => r.id === requestId)
+        if (request && currentDesigner) {
+      const confirmAccept = confirm(
+        `Are you ready to accept this project?\n\n` +
+        `Candidate: ${request.candidateName}\n` +
+        `Office: ${request.office}\n` +
+        `Budget: ${request.budget || 'N/A'}\n` +
+        `Deadline: ${request.deadline || 'N/A'}\n\n` +
+        `Once accepted, you'll be expected to complete this work.`
+        )
+
+        if (confirmAccept) {
+          onUpdateRequest({
+            ...request,
+            workStatus: 'in_progress',
+            acceptedDesignerId: currentDesigner.id
+          })
+        alert('✅ Work accepted successfully! You can now start working on this project.')
+      }
+    }
+  }
+
+        function submitWork(requestId: string, files: FileList) {
+    const request = requests.find(r => r.id === requestId)
+        if (request) {
+      // Convert files to base64 for MVP
+      const filePromises = Array.from(files).map(file =>
+        new Promise<string>((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.readAsDataURL(file)
+        })
+          )
+
+      Promise.all(filePromises).then(fileUrls => {
+            onUpdateRequest({
+              ...request,
+              workStatus: 'completed',
+              completedAt: new Date().toISOString(),
+              submittedWork: fileUrls
+            })
+          })
+    }
+  }
+
+          return (
+          <div className="designer-dashboard" style={{ display: 'grid', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Available to accept</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{availableRequests.length}</div>
+              </div>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>In progress</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{myInProgressRequests.length}</div>
+              </div>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Completed</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{myCompletedRequests.length}</div>
+              </div>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Potential earnings</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{myAcceptedRequests.reduce((sum, r) => sum + (Number(String(r.budget || '').replace(/[^\d.]/g, '')) || 0), 0) > 0 ? formatKES(myAcceptedRequests.reduce((sum, r) => sum + (Number(String(r.budget || '').replace(/[^\d.]/g, '')) || 0), 0)) : 'N/A'}</div>
+              </div>
+            </div>
+
+            <div style={{ border: '2px solid #10b981', borderRadius: 12, padding: 16, background: '#10b98105' }}>
+              <h3 style={{ marginTop: 0, color: '#10b981' }}>🎨 Work available to accept</h3>
+              {!currentDesigner && <p style={{ fontSize: 14, opacity: 0.8 }}>Designer profile not found. Please join as a designer first.</p>}
+              {currentDesigner && availableRequests.length === 0 && <p style={{ fontSize: 14, opacity: 0.8 }}>No new work available. Clients will select designers based on their profiles.</p>}
+              {currentDesigner && availableRequests.length > 0 && (
+                <p style={{ fontSize: 14, opacity: 0.8, marginBottom: 12 }}>
+                  <strong>{availableRequests.length}</strong> project{availableRequests.length > 1 ? 's' : ''} available for you to accept!
+                </p>
+              )}
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 12 }}>
+                {availableRequests.slice(0, 6).map(r => (
+                  <li key={r.id} style={{ border: '2px solid #10b981', borderRadius: 12, padding: 12, background: 'white', boxShadow: '0 2px 8px rgba(16, 185, 129, 0.1)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <strong style={{ fontSize: 16, color: '#1f2937' }}>{r.candidateName}</strong>
+                          <span style={{ fontSize: 12, background: '#10b98120', color: '#10b981', padding: '2px 8px', borderRadius: 12, fontWeight: 600 }}>
+                            {r.office}
+                          </span>
+                        </div>
+                        <div style={{ display: 'grid', gap: 4, marginBottom: 8 }}>
+                          <div style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <span style={{ opacity: 0.7 }}>💰</span>
+                            <span><strong>Budget:</strong> {r.budget || 'N/A'}</span>
+                          </div>
+                          <div style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <span style={{ opacity: 0.7 }}>📅</span>
+                            <span><strong>Deadline:</strong> {r.deadline || 'N/A'}</span>
+                          </div>
+                          <div style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <span style={{ opacity: 0.7 }}>📧</span>
+                            <span><strong>Contact:</strong> {r.contactEmail}</span>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 12, opacity: 0.8, background: '#f3f4f6', padding: 8, borderRadius: 6, borderLeft: '3px solid #10b981' }}>
+                          <strong>Brief:</strong> {r.requirements.slice(0, 150)}{r.requirements.length > 150 ? '...' : ''}
+                        </div>
+                        {r.style && (
+                          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+                            <strong>Style:</strong> {r.style}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
+                        <button
+                          onClick={() => acceptWork(r.id)}
+                          className="button"
+                          style={{
+                            fontSize: 14,
+                            padding: '12px 20px',
+                            background: '#10b981',
+                            border: '2px solid #10b981',
+                            fontWeight: 600,
+                            borderRadius: 8,
+                            minWidth: '120px'
+                          }}
+                          onMouseOver={(e) => {
+                            e.currentTarget.style.background = '#059669'
+                            e.currentTarget.style.borderColor = '#059669'
+                          }}
+                          onMouseOut={(e) => {
+                            e.currentTarget.style.background = '#10b981'
+                            e.currentTarget.style.borderColor = '#10b981'
+                          }}
+                        >
+                          ✅ Accept Work
+                        </button>
+                        <span style={{ fontSize: 11, opacity: 0.7, textAlign: 'center' }}>
+                          Click to start working
+                        </span>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+              <h3 style={{ marginTop: 0 }}>My accepted work</h3>
+              {myAcceptedRequests.length === 0 && <p style={{ fontSize: 14, opacity: 0.8 }}>No accepted work yet.</p>}
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+                {myAcceptedRequests.slice(0, 6).map(r => (
+                  <li key={r.id} style={{ border: '1px solid #646cff', borderRadius: 8, padding: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div>
+                        <strong>{r.candidateName}</strong> — {r.office}
+                        <div style={{ fontSize: 12, opacity: 0.8 }}>Budget: {r.budget || 'N/A'} • Deadline: {r.deadline || 'N/A'}</div>
+                        <div style={{ fontSize: 12, opacity: 0.8 }}>Contact: {r.contactEmail}</div>
+                        <div style={{ fontSize: 12, opacity: 0.8 }}>Brief: {r.requirements.slice(0, 100)}...</div>
+                        <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+                          {getWorkStatusIcon(r.workStatus)} {getWorkStatusText(r.workStatus)}
+                        </div>
+                      </div>
+                      {r.workStatus === 'in_progress' && (
+                        <div>
+                          <input
+                            type="file"
+                            multiple
+                            accept="image/*,.pdf,.doc,.docx"
+                            onChange={(e) => e.target.files && submitWork(r.id, e.target.files)}
+                            style={{ display: 'none' }}
+                            id={`submit-${r.id}`}
+                          />
+                          <label
+                            htmlFor={`submit-${r.id}`}
+                            className="button"
+                            style={{ fontSize: 12, padding: '4px 8px', cursor: 'pointer' }}
+                          >
+                            Submit Work
+                          </label>
+                        </div>
+                      )}
+                      {r.workStatus === 'completed' && (
+                        <span style={{ fontSize: 12, color: '#10b981', fontWeight: 600 }}>✅ Completed</span>
+                      )}
+                    </div>
+                    {r.submittedWork && r.submittedWork.length > 0 && (
+                      <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+                        📁 {r.submittedWork.length} file(s) submitted on {new Date(r.completedAt || '').toLocaleDateString()}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          )
+}
+
+          function AdminDashboard({requests}: {requests: DesignRequest[] }) {
+  const paid = requests.filter(r => r.paid)
+          return (
+          <div className="admin-dashboard" style={{ display: 'grid', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Total requests</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{requests.length}</div>
+              </div>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Published (paid)</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{paid.length}</div>
+              </div>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Revenue (MVP)</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{formatKES(paid.reduce((sum, r) => sum + (r.feeKES || 0), 0))}</div>
+              </div>
+            </div>
+            <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+              <h3 style={{ marginTop: 0 }}>Latest paid requests</h3>
+              {paid.length === 0 && <p style={{ fontSize: 14, opacity: 0.8 }}>No paid requests yet.</p>}
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
+                {paid.slice(0, 6).map(r => (
+                  <li key={r.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8 }}>
+                    <strong>{r.candidateName}</strong> — {r.office}
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>Budget: {r.budget || 'N/A'} • Fee: {formatKES(r.feeKES || determineFeeKES(r.budget))} • Deadline: {r.deadline || 'N/A'}</div>
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>Contact: {r.contactEmail}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          )
+}
+
+          function AdminPanel({requests, designers, onUpdateRequests, onUpdateDesigners, onLogout}: {requests: DesignRequest[]; designers: Designer[]; onUpdateRequests: (r: DesignRequest[]) => void; onUpdateDesigners: (d: Designer[]) => void; onLogout: () => void }) {
+  const [filter, setFilter] = useState<'all' | 'paid' | 'unpaid'>('all')
+  const filteredRequests = requests.filter(r => filter === 'all' || (filter === 'paid' ? r.paid : !r.paid))
+
+          function togglePaid(id: string) {
+            onUpdateRequests(requests.map(r => r.id === id ? { ...r, paid: !r.paid } : r))
+          }
+
+          function deleteRequest(id: string) {
+            onUpdateRequests(requests.filter(r => r.id !== id))
+          }
+
+          function deleteDesigner(id: string) {
+            onUpdateDesigners(designers.filter(d => d.id !== id))
+          }
+
+          return (
+          <div className="admin-panel" style={{ display: 'grid', gap: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0 }}>Admin Panel</h3>
+              <button onClick={onLogout} className="button" style={{ background: 'var(--error)', fontSize: 12 }}>Logout</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <strong>Requests:</strong>
+              <select value={filter} onChange={(e) => setFilter(e.target.value as 'all' | 'paid' | 'unpaid')} style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)' }}>
+                <option value="all">All</option>
+                <option value="paid">Paid</option>
+                <option value="unpaid">Unpaid</option>
+              </select>
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {filteredRequests.map(r => (
+                <div key={r.id} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                  <div><strong>{r.candidateName}</strong> — {r.office} ({r.paid ? 'Paid' : 'Unpaid'})</div>
+                  <div>Budget: {r.budget} • Deadline: {r.deadline}</div>
+                  <div>Brief: {r.requirements.slice(0, 100)}...</div>
+                  <div>Images: {r.images?.length || 0}</div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button onClick={() => togglePaid(r.id)} className="button">{r.paid ? 'Mark Unpaid' : 'Mark Paid'}</button>
+                    <button onClick={() => deleteRequest(r.id)} className="button" style={{ background: 'var(--bg-elev)', color: 'var(--muted)', border: '1px solid var(--border)' }}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div>
+              <strong>Designers:</strong>
+              <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                {designers.map(d => (
+                  <div key={d.id} style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 12 }}>
+                    <div><strong>{d.name}</strong> — {d.location}</div>
+                    <div>Skills: {d.skills.join(', ')}</div>
+                    <div>Rate: {d.rateKES ? formatKES(d.rateKES) : 'N/A'}</div>
+                    <button onClick={() => deleteDesigner(d.id)} className="button" style={{ background: 'var(--bg-elev)', color: 'var(--muted)', border: '1px solid var(--border)' }}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          )
+}
+
+          function LoginForm({onLogin}: {onLogin: () => void }) {
+  const [password, setPassword] = useState('')
+          const [error, setError] = useState('')
+
+          function submit(e: React.FormEvent) {
+            e.preventDefault()
+    if (password === 'admin123') {
+            localStorage.setItem('admin_logged_in', 'true')
+      onLogin()
+    } else {
+            setError('Invalid password')
+          }
+  }
+
+          return (
+          <div style={{ maxWidth: 400, margin: '0 auto', padding: 20, border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-elev)' }}>
+            <h2 style={{ marginTop: 0 }}>Admin Login</h2>
+            <form onSubmit={submit} style={{ display: 'grid', gap: 12 }}>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                required
+                style={{ padding: 12, borderRadius: 8, border: '1px solid var(--border)' }}
+              />
+              <button type="submit" className="button">Login</button>
+              {error && <p style={{ color: 'var(--error)', margin: 0 }}>{error}</p>}
+            </form>
+          </div>
+          )
+}
+
+          export default function App() {
+  const [view, setView] = useState<ViewKey>('dashboard')
+            const [userRole, setUserRole] = useState<UserRole>(() => {
+    const saved = localStorage.getItem('user_role')
+              return saved as UserRole || null
+  })
+              const [userEmail, setUserEmail] = useState<string>(() => {
+    return localStorage.getItem('user_email') || ''
+  })
+                const [designers, setDesigners] = useState<Designer[]>(() => {
+    const loadedDesigners = loadFromStorage<Designer[]>(STORAGE_KEYS.designers, [])
+                return loadedDesigners.length ? loadedDesigners : SAMPLE_DESIGNERS
+  })
+                const [requests, setRequests] = useState<DesignRequest[]>(() =>
+                loadFromStorage<DesignRequest[]>(STORAGE_KEYS.requests, [])
+                )
+                const [reviews, setReviews] = useState<Review[]>(() =>
+                loadFromStorage<Review[]>(STORAGE_KEYS.reviews, [])
+                )
+                const [messages, setMessages] = useState<Message[]>(() =>
+                loadFromStorage<Message[]>(STORAGE_KEYS.messages, [])
+                )
+                const [notifications, setNotifications] = useState<Notification[]>(() =>
+                loadFromStorage<Notification[]>(STORAGE_KEYS.notifications, [])
+                )
+
+                // Checkout
+                const [pending, setPending] = useState<DesignRequest | null>(null)
+
+  useEffect(() => {
+                  saveToStorage(STORAGE_KEYS.designers, designers)
+                }, [designers])
+
+  useEffect(() => {
+                  saveToStorage(STORAGE_KEYS.requests, requests)
+                }, [requests])
+
+  useEffect(() => {
+                  saveToStorage(STORAGE_KEYS.reviews, reviews)
+                }, [reviews])
+
+  useEffect(() => {
+                  saveToStorage(STORAGE_KEYS.messages, messages)
+                }, [messages])
+
+  useEffect(() => {
+                  saveToStorage(STORAGE_KEYS.notifications, notifications)
+                }, [notifications])
+
+  useEffect(() => {
+                  localStorage.setItem('user_role', userRole || '')
+                }, [userRole])
+
+  useEffect(() => {
+                  localStorage.setItem('user_email', userEmail)
+                }, [userEmail])
+
+                function setClientRole(email: string) {
+                  setUserRole('client')
+    setUserEmail(email)
+  }
+
+                function setDesignerRole(email: string) {
+                  setUserRole('designer')
+    setUserEmail(email)
+  }
+
+                function setAdminRole() {
+                  setUserRole('admin')
+    setUserEmail('admin@campaignbridge.com')
+  }
+
+                function logoutRole() {
+                  setUserRole(null)
+    setUserEmail('')
+                localStorage.removeItem('user_role')
+                localStorage.removeItem('user_email')
+  }
+
+                function publishRequest(paidRequest: DesignRequest) {
+                  setRequests(prev => [paidRequest, ...prev])
+    setPending(null)
+                setView('designers')
+                // WhatsApp alerts to selected designers (client-side compose)
+                try {
+      const picked = designers.filter(d => paidRequest.selectedDesignerIds?.includes(d.id))
+      const targets = picked.map(d => ({d, msisdn: toMSISDNKE(d.phone) })).filter(x => x.msisdn)
+      const imageLinks = paidRequest.images?.map((img, i) => `Image ${i + 1}: ${img}`) || []
+                const extra = [
+                paidRequest.keyMessages && `Key Messages: ${paidRequest.keyMessages}`,
+                paidRequest.colors && `Colors: ${paidRequest.colors}`,
+                paidRequest.targetAudience && `Target Audience: ${paidRequest.targetAudience}`,
+                ...imageLinks,
+                ].filter(Boolean).join('\n')
+                const base = `New Paid Campaign Request via CampaignDesign Bridge (Admin: 0706746067)\n\nCandidate: ${paidRequest.candidateName}\nOffice: ${paidRequest.office}\nBudget: ${paidRequest.budget || 'N/A'}\nDeadline: ${paidRequest.deadline || 'N/A'}\n\nBrief:\n${paidRequest.requirements}\n\n${extra}\n\nReply if interested.`
+                if (targets.length) {
+                  targets.slice(0, 5).forEach(({ d, msisdn }, i) => {
+                    const msg = `Hello ${d.name},\n${base}`
+                    const url = `https://wa.me/${msisdn}?text=${encodeURIComponent(msg)}`
+                    setTimeout(() => window.open(url, '_blank'), i * 300)
+                  })
+                } else {
+        const adminNumber = '254706746067'
+                const url = `https://wa.me/${adminNumber}?text=${encodeURIComponent('No designer phone numbers available for alert.')}`
+                window.open(url, '_blank')
+      }
+    } catch {
+                  // Ignore errors for MVP
+                }
+  }
+
+                function addDesigner(d: Designer) {
+                  setDesigners((prev) => [d, ...prev])
+    setView('designers')
+  }
+
+                function updateRequest(updatedRequest: DesignRequest) {
+                  setRequests(prev => prev.map(r => r.id === updatedRequest.id ? updatedRequest : r))
+                }
+
+                function addReview(review: Omit<Review, 'id' | 'createdAt'>) {
+    const newReview: Review = {
+                  ...review,
+                  id: crypto.randomUUID(),
+                createdAt: new Date().toISOString()
+    }
+    setReviews(prev => [newReview, ...prev])
+
+                // Update designer rating
+                if (review.type === 'client_to_designer') {
+                  setDesigners(prev => prev.map(d => {
+                    if (d.contactEmail === review.revieweeEmail) {
+                      const designerReviews = reviews.filter(r => r.revieweeEmail === d.contactEmail && r.type === 'client_to_designer')
+                      const allReviews = [...designerReviews, newReview]
+                      const avgRating = allReviews.reduce((sum, r) => sum + r.rating, 0) / allReviews.length
+                      return { ...d, rating: avgRating, completedProjects: (d.completedProjects || 0) + 1 }
+                    }
+                    return d
+                  }))
+                }
+
+    // Update request with rating
+    setRequests(prev => prev.map(r => {
+      if (r.id === review.requestId) {
+        if (review.type === 'client_to_designer') {
+          return {...r, clientRating: review.rating }
+        } else {
+          return {...r, designerRating: review.rating }
+        }
+      }
+                return r
+    }))
+  }
+
+                function sendMessage(message: Omit<Message, 'id' | 'createdAt' | 'read'>) {
+    const newMessage: Message = {
+                  ...message,
+                  id: crypto.randomUUID(),
+                createdAt: new Date().toISOString(),
+                read: false
+    }
+    setMessages(prev => [newMessage, ...prev])
+
+                // Create notification for recipient
+                addNotification({
+                  userEmail: message.receiverEmail,
+                title: 'New Message',
+                message: `New message from ${message.senderName}`,
+                type: 'info',
+                relatedId: message.requestId
+    })
+  }
+
+                function addNotification(notification: Omit<Notification, 'id' | 'createdAt' | 'read'>) {
+    const newNotification: Notification = {
+                  ...notification,
+                  id: crypto.randomUUID(),
+                createdAt: new Date().toISOString(),
+                read: false
+    }
+    setNotifications(prev => [newNotification, ...prev])
+  }
+
+                function markNotificationRead(notificationId: string) {
+                  setNotifications(prev => prev.map(n =>
+                    n.id === notificationId ? { ...n, read: true } : n
+                  ))
+                }
+
+                function markMessageRead(messageId: string) {
+                  setMessages(prev => prev.map(m =>
+                    m.id === messageId ? { ...m, read: true } : m
+                  ))
+                }
+
+                function getUnreadNotifications(userEmail: string) {
+    return notifications.filter(n => n.userEmail === userEmail && !n.read)
+  }
+
+                function getUnreadMessages(userEmail: string) {
+    return messages.filter(m => m.receiverEmail === userEmail && !m.read)
+  }
+
+                return (
+                <div className="app-container" style={{ height: '100vh', display: 'grid', gridTemplateRows: 'auto 1fr auto' }}>
+                  <Header />
+                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 280px) 1fr', gap: 16, padding: 16, alignItems: 'start' }}>
+                    <Sidebar active={view} onChange={setView} userRole={userRole} />
+                    <main className="main-content" style={{ display: 'grid', gap: 16 }}>
+                      {view === 'dashboard' && (
+                        <section>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                            <h2 style={{ marginTop: 0 }}>Dashboard</h2>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              {userRole && (
+                                <span style={{ fontSize: 12, opacity: 0.8, padding: '4px 8px', background: 'var(--bg-elev)', borderRadius: 4 }}>
+                                  {userRole === 'admin' ? '👑 Admin' : userRole === 'client' ? '👤 Client' : '🎨 Designer'} ({userEmail})
+                                </span>
+                              )}
+                              {!userRole && (
+                                <div style={{ display: 'flex', gap: 4 }}>
+                                  <button onClick={() => setClientRole(prompt('Enter your email:') || '')} className="button" style={{ fontSize: 12, padding: '4px 8px' }}>Login as Client</button>
+                                  <button onClick={() => setDesignerRole(prompt('Enter your email:') || '')} className="button" style={{ fontSize: 12, padding: '4px 8px' }}>Login as Designer</button>
+                                </div>
+                              )}
+                              {userRole && (
+                                <button onClick={logoutRole} className="button" style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-elev)', color: 'var(--muted)', border: '1px solid var(--border)' }}>Logout</button>
+                              )}
+                            </div>
+                          </div>
+                          {!userRole && (
+                            <div style={{ border: '1px solid var(--border)', borderRadius: 12, padding: 16, marginBottom: 16, textAlign: 'center' }}>
+                              <h3 style={{ marginTop: 0 }}>Welcome to CampaignDesign Bridge</h3>
+                              <p style={{ marginBottom: 16 }}>Please select your role to continue:</p>
+                              <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+                                <button onClick={() => setClientRole(prompt('Enter your email:') || '')} className="button" style={{ padding: '12px 24px' }}>
+                                  👤 I'm a Candidate/Client
+                                </button>
+                                <button onClick={() => setDesignerRole(prompt('Enter your email:') || '')} className="button" style={{ padding: '12px 24px' }}>
+                                  🎨 I'm a Designer
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {userRole === 'client' && <ClientDashboard requests={requests} userEmail={userEmail} />}
+                          {userRole === 'designer' && <DesignerDashboard requests={requests} designers={designers} designerEmail={userEmail} onUpdateRequest={updateRequest} />}
+                          {userRole === 'admin' && <AdminDashboard requests={requests} />}
+                          <InfoNote />
+                        </section>
+                      )}
+
+                      {view === 'designers' && (
+                        <section>
+                          <h2 style={{ marginTop: 0 }}>Available Designers</h2>
+                          <DesignerList designers={designers} requests={requests} />
+                          <InfoNote />
+                        </section>
+                      )}
+
+                      {view === 'request' && (
+                        <section>
+                          <h2 style={{ marginTop: 0 }}>Post a Design Request</h2>
+                          <p style={{ marginTop: -6, fontSize: 13, opacity: 0.8 }}>A small posting fee in KES (400–800) applies based on your project budget.</p>
+                          <CandidateRequestForm designers={designers} onCheckout={(r) => setPending(r)} />
+                          <InfoNote />
+                        </section>
+                      )}
+
+                      {view === 'join' && (
+                        <section>
+                          <h2 style={{ marginTop: 0 }}>Join the network</h2>
+                          <DesignerSignupForm onCreate={addDesigner} />
+                          <InfoNote />
+                        </section>
+                      )}
+
+                      {view === 'admin' && (
+                        <section>
+                          <AdminPanel requests={requests} designers={designers} onUpdateRequests={setRequests} onUpdateDesigners={setDesigners} onLogout={() => { localStorage.removeItem('admin_logged_in'); logoutRole(); setView('dashboard'); }} />
+                          <InfoNote />
+                        </section>
+                      )}
+
+                      {view === 'login' && (
+                        <section>
+                          <LoginForm onLogin={() => { setAdminRole(); setView('admin'); }} />
+                        </section>
+                      )}
+                    </main>
+                  </div>
+
+                  {pending && (
+                    <CheckoutPanel
+                      request={pending}
+                      onCancel={() => setPending(null)}
+                      onSuccess={publishRequest}
+                    />
+                  )}
+
+                  <footer style={{ padding: 16, borderTop: '1px solid var(--border)', fontSize: 12, margin: 0, opacity: 0.8, background: 'var(--bg-elev)' }}>
+                    <div>© {new Date().getFullYear()} CampaignDesign Bridge. Payments in KES. MVP mode.</div>
+                  </footer>
+                </div>
+                )
+}
